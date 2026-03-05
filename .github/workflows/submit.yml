@@ -1,0 +1,17 @@
+name: Create Submission from Main
+on:
+  push:
+    branches: ['main']
+permissions:
+  contents: write
+jobs:
+  submit:
+    uses: curvenote/actions/.github/workflows/submit.yml@v1
+    with:
+      venue: curious-beams
+      kind: playground
+      collection: playgrounds
+      id-pattern-regex: '^curious-beams-[a-zA-Z0-9_-]+$'
+    secrets:
+      CURVENOTE: ${{ secrets.CURVENOTE_TOKEN }}
+      GITHUB: ${{ secrets.GITHUB_TOKEN }}

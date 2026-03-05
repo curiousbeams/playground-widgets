@@ -1,0 +1,32 @@
+# See docs at: https://mystmd.org/guide/frontmatter
+version: 1
+project:
+  id: curious-beams-playground-widgets
+  title: Anywidgets Playground
+  github: https://github.com/curiousbeams/playground-widgets
+  open_access: true
+  license: CC-BY-4.0
+  date: 2026-03-05
+  exclude:
+    - README.md
+  authors:
+    - id: gvarnavides
+      name: Georgios Varnavides
+      email: g.varnavides@tudelft.nl
+      orcid: 0000-0001-8338-3323
+      affiliations:
+        - id: imphys
+          department: Imaging Physics, Applied Sciences
+          institution: Delft University of Technology
+          address: Gebouw 22, Lorentzweg 1, 2628 CJ, Delft, NL
+          ror: 02e2c7k09
+      roles:
+        - Conceptualization
+        - Funding acquisition
+        - Project administration
+        - Software
+        - Validation
+        - Visualization
+        - Writing - original draft
+site:
+  template: book-theme
