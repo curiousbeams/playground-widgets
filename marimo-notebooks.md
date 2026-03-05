@@ -2,7 +2,7 @@
 title: Marimo Notebooks
 ---
 
-Import [marimo notebooks](hhttps://marimo.io/).
+Import [marimo notebooks](https://marimo.io/).
 
 ```md
 :::{any:bundle} https://curiousbeams.github.io/esm-widgets/marimo-islands-widget.js
