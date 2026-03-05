@@ -19,7 +19,8 @@ Create GitHub cards using the GitHub API.
     "abtem/abtem"
   ],
   "users": [
-    "gvarnavi"
+    "gvarnavi",
+    "stevejpurves"
   ]
 }
 
@@ -40,7 +41,8 @@ Create GitHub cards using the GitHub API.
     "abtem/abtem"
   ],
   "users": [
-    "gvarnavi"
+    "gvarnavi",
+    "stevejpurves"
   ]
 }
 
