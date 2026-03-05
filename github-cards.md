@@ -5,7 +5,7 @@ title: GithHub Cards
 Create GitHub cards using the GitHub API.
 
 ```md
-::::{any:bundle} https://curiousbeams.github.io/esm-widgets/github-api-widget.js
+:::{any:bundle} https://curiousbeams.github.io/esm-widgets/github-api-widget.js
 
 {
   "organizations": [
@@ -26,7 +26,7 @@ Create GitHub cards using the GitHub API.
 :::
 ```
 
-::::{any:bundle} https://curiousbeams.github.io/esm-widgets/github-api-widget.js
+:::{any:bundle} https://curiousbeams.github.io/esm-widgets/github-api-widget.js
 
 {
   "organizations": [
