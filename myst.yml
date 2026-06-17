@@ -28,5 +28,8 @@ project:
         - Validation
         - Visualization
         - Writing - original draft
+  plugins:
+    - type: executable
+      path: .venv/bin/jupyter-book-marimo
 site:
   template: book-theme
