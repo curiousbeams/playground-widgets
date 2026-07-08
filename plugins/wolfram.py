@@ -14,6 +14,13 @@ earlier ones (IncludeDefinitions/SaveDefinitions bake those into each deployed
 object). Cell digests are therefore *chained*: cell N's digest covers the code
 of cells 1..N, so editing an earlier cell invalidates later deployments.
 
+The expression to deploy is tagged with a full-line comment marker,
+`(* #| deploy *)` or `(* #| label: app:my-widget *)`: lines above the marker
+are setup, the region below is deployed. Untagged cells are definitions-only.
+A label makes the widget a MyST cross-reference target; adding the :caption:
+option wraps it in a numbered figure. Marker lines are hidden from :echo:
+fences and label renames never invalidate cached deployments.
+
 Deployment is only attempted when JUPYTER_BOOK_WOLFRAM_DEPLOY=1 *and*
 wolframscript is on PATH; a cache miss otherwise renders a warning admonition
 instead of failing the build, so CI and co-authors need no Wolfram tooling.
@@ -36,6 +43,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
@@ -57,7 +65,19 @@ CLOUD_BASE_ENV = "JUPYTER_BOOK_WOLFRAM_CLOUD_BASE"
 DEFAULT_CLOUD_PATH = "myst-widgets"
 DEPLOY_TIMEOUT_SECONDS = 600
 URL_MARKER = "MYST_WOLFRAM_URL"
+ERROR_MARKER = "MYST_WOLFRAM_ERROR"
 CHAIN_SEPARATOR = "%%"
+
+# In-code output tag, mirroring Jupyter/MyST cell magic: a full-line WL comment
+# `(* #| deploy *)` or `(* #| label: app:some-label *)`. Lines before the
+# marker are setup; the region after it is evaluated and its value deployed.
+# Untagged cells are definitions-only (no widget).
+MARKER_RE = re.compile(
+    r"^\s*\(\*\s*#\|\s*(?:label:\s*(?P<label>\S[^*]*?)|deploy)\s*\*\)\s*$"
+)
+# Hashing canonicalizes marker lines to this sentinel so renaming a label
+# never invalidates a deployment, while moving/adding/removing the marker does.
+MARKER_SENTINEL = "(*#|deploy*)"
 
 BOOL = {"type": "boolean"}
 STR = {"type": "string"}
@@ -92,16 +112,18 @@ PLUGIN_SPEC = {
             "doc": (
                 "Embed interactive Wolfram Language output as a client-side "
                 "Wolfram Cloud widget. All cells on a page share one kernel "
-                "session at deploy time (document order). The body's last "
-                "expression (no trailing semicolon) is what gets deployed; use "
-                "SaveDefinitions->True in Manipulate when it relies on helper "
-                "definitions."
+                "session at deploy time (document order). Tag the expression "
+                "to deploy with a full-line comment `(* #| deploy *)` or "
+                "`(* #| label: my-label *)` (the label makes the widget a "
+                "cross-reference target; add :caption: for a numbered figure). "
+                "Untagged cells are definitions-only. Use SaveDefinitions->True "
+                "in Manipulate when it relies on helper definitions."
             ),
             "options": {
                 **DISPLAY_OPTION_SPECS,
                 "url": STR,
                 "echo": BOOL,
-                "output": BOOL,
+                "caption": STR,
                 "defer": BOOL,
             },
             "body": {
@@ -149,7 +171,37 @@ def declare_result(content: Any) -> None:
 
 
 def normalize_code(code: str) -> str:
-    return "\n".join(line.rstrip() for line in code.strip().splitlines())
+    return "\n".join(
+        MARKER_SENTINEL if MARKER_RE.match(line) else line.rstrip()
+        for line in code.strip().splitlines()
+    )
+
+
+def parse_marker(code: str) -> tuple[str, str | None, str | None]:
+    """Split a cell body at its output marker: (setup, tagged, label)."""
+    lines = code.splitlines()
+    hits = [(i, m) for i, m in ((i, MARKER_RE.match(line)) for i, line in enumerate(lines)) if m]
+    if not hits:
+        return code, None, None
+    if len(hits) > 1:
+        raise ValueError("at most one (* #| deploy/label *) marker per {wolfram} cell")
+    index, match = hits[0]
+    tagged = "\n".join(lines[index + 1 :]).strip()
+    if not tagged:
+        raise ValueError("the (* #| ... *) marker must be followed by the expression to deploy")
+    label = (match.group("label") or "").strip() or None
+    return "\n".join(lines[:index]).strip(), tagged, label
+
+
+def display_code(code: str) -> str:
+    """The echoed code fence hides marker lines (like Jupyter hides #| lines)."""
+    return "\n".join(line for line in code.splitlines() if not MARKER_RE.match(line)).strip()
+
+
+def normalize_identifier(label: str) -> str:
+    """mystmd normalizeLabel: collapse whitespace, strip quotes, lowercase."""
+    collapsed = re.sub(r"[\t\n\r ]+", " ", label)
+    return re.sub(r"['‘’\"“”]+", "", collapsed).strip().lower()
 
 
 def content_hash(code: str) -> str:
@@ -312,14 +364,24 @@ class Cell:
         self.digest: str | None = None
         self.url: str | None = str(self.options.get("url") or "").strip() or None
         self.error: str | None = None
+        try:
+            self.setup, self.tagged, self.marker_label = parse_marker(self.code)
+        except ValueError as error:
+            self.setup, self.tagged, self.marker_label = self.code, None, None
+            self.error = str(error)
 
     @property
     def is_notebook(self) -> bool:
         return self.nb_raw is not None
 
     @property
+    def deployable(self) -> bool:
+        """Only tagged code cells (and .nb embeds) produce a cloud object."""
+        return self.is_notebook or self.tagged is not None
+
+    @property
     def wants_output(self) -> bool:
-        return self.options.get("output") is not False
+        return self.deployable or self.url is not None
 
     @property
     def nb_path(self) -> Path | None:
@@ -350,21 +412,37 @@ def build_driver(tmp: Path, cells: list[Cell], publish: set[str]) -> Path:
             continue
         if not cell.code:
             continue
-        cell_file = tmp / f"cell-{cell.digest}.wl"
-        cell_file.write_text(cell.code + "\n", encoding="utf-8")
-        get_expr = f"Get[{wl_string(str(cell_file))}]"
-        if cell.digest in publish:
-            lines.append(f"MystWolfram`Result = {get_expr};")
+        if cell.digest in publish and cell.tagged is not None:
+            # Setup evaluates in the page session; the tagged region's value
+            # is captured and published, with a guard against Null (a stray
+            # trailing semicolon would otherwise deploy an empty notebook).
+            if cell.setup:
+                setup_file = tmp / f"setup-{cell.digest}.wl"
+                setup_file.write_text(cell.setup + "\n", encoding="utf-8")
+                lines.append(f"Get[{wl_string(str(setup_file))}];")
+            tagged_file = tmp / f"tagged-{cell.digest}.wl"
+            tagged_file.write_text(cell.tagged + "\n", encoding="utf-8")
+            lines.append(f"MystWolfram`Result = Get[{wl_string(str(tagged_file))}];")
+            null_message = wl_string(
+                f"{ERROR_MARKER}[{cell.digest}]="
+                "tagged region evaluated to Null (trailing semicolon?)"
+            )
             lines.append(
-                publish_call(
+                f"If[MystWolfram`Result === Null, Print[{null_message}], "
+                + publish_call(
                     "MystWolfram`Result",
                     f"{cloud_prefix}/wolfram-{cell.digest}",
                     cell.digest,
                     cloud_base,
                 )
+                + "]"
             )
         else:
-            lines.append(f"{get_expr};")
+            # Definitions-only, cached, or :url: cell: evaluate the whole body
+            # (marker lines are comments) so its definitions reach later cells.
+            cell_file = tmp / f"cell-{cell.digest}.wl"
+            cell_file.write_text(cell.code + "\n", encoding="utf-8")
+            lines.append(f"Get[{wl_string(str(cell_file))}];")
     for cell in cells:
         if not cell.is_notebook or cell.error or cell.digest not in publish:
             continue
@@ -408,6 +486,9 @@ def deploy_page(cells: list[Cell], publish: set[str]) -> dict[str, dict[str, Any
         if line.startswith(f"{URL_MARKER}["):
             digest, _, url = line[len(URL_MARKER) + 1 :].partition("]=")
             urls[digest] = url.strip()
+        elif line.startswith(f"{ERROR_MARKER}["):
+            digest, _, message = line[len(ERROR_MARKER) + 1 :].partition("]=")
+            log(f"deployment of {digest} failed: {message.strip()}")
 
     entries: dict[str, dict[str, Any]] = {}
     now = datetime.now(timezone.utc).isoformat(timespec="seconds")
@@ -442,12 +523,13 @@ def directive_nodes(name: str, data: dict[str, Any]) -> list[dict[str, Any]]:
     if name == WOLFRAM_DIRECTIVE:
         reject_unknown_options(
             options,
-            set(DISPLAY_OPTION_SPECS) | {"url", "echo", "output", "defer"},
+            set(DISPLAY_OPTION_SPECS) | {"url", "echo", "caption", "defer"},
             WOLFRAM_DIRECTIVE,
         )
         code = str(data.get("body") or "").strip()
         if not code and not str(options.get("url") or "").strip():
             raise ValueError("{wolfram} requires a code body or the url option")
+        parse_marker(code)  # surface marker errors at directive-parse time
         return [
             {
                 "type": CELL_NODE,
@@ -539,7 +621,7 @@ def resolve_page(cells: list[Cell]) -> None:
         for cell in cells
         if cell.url is None
         and cell.error is None
-        and cell.wants_output
+        and cell.deployable
         and not cell.options.get("defer")
     }
     if publish and deploy_enabled():
@@ -551,22 +633,53 @@ def resolve_page(cells: list[Cell]) -> None:
                     cell.url = entries[cell.digest]["url"]
 
 
+def labeled_output(widget: dict[str, Any], cell: Cell) -> dict[str, Any]:
+    """Attach the marker label as a cross-reference target; a :caption: wraps
+    the widget in a figure container (numbered by mystmd's enumeration)."""
+    label = cell.marker_label
+    caption = str(cell.options.get("caption") or "").strip()
+    if caption:
+        container: dict[str, Any] = {
+            "type": "container",
+            "kind": "figure",
+            "children": [
+                widget,
+                {
+                    "type": "caption",
+                    "children": [{"type": "paragraph", "children": [text_node(caption)]}],
+                },
+            ],
+            "position": cell.position,
+        }
+        if label:
+            container["label"] = label
+            container["identifier"] = normalize_identifier(label)
+        return container
+    if label:
+        widget["label"] = label
+        widget["identifier"] = normalize_identifier(label)
+    return widget
+
+
 def cell_output_nodes(cell: Cell, index: int) -> list[dict[str, Any]]:
     nodes: list[dict[str, Any]] = []
     if cell.options.get("echo") and cell.code:
-        nodes.append(code_node(cell.code, cell.position))
+        nodes.append(code_node(display_code(cell.code), cell.position))
     if cell.error:
         nodes.append(
-            placeholder_admonition(f"(* {cell.error} *)", "missing-file", cell.position)
+            placeholder_admonition(
+                f"(* {cell.error} *)", cell.digest or "invalid-cell", cell.position
+            )
         )
     elif not cell.wants_output:
-        pass  # definitions-only cell: fence (if echoed) but no widget
+        pass  # untagged cell: definitions only, fence (if echoed) but no widget
     elif cell.url:
-        nodes.append(anywidget_node(cell.url, cell.options, cell.digest, index, cell.position))
+        widget = anywidget_node(cell.url, cell.options, cell.digest, index, cell.position)
+        nodes.append(labeled_output(widget, cell))
     else:
         nodes.append(
             placeholder_admonition(
-                cell.code or str(cell.nb_raw or ""), cell.digest, cell.position
+                display_code(cell.code) or str(cell.nb_raw or ""), cell.digest, cell.position
             )
         )
     return nodes
