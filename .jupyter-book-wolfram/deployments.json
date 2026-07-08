@@ -1,6 +1,18 @@
 {
   "version": 1,
   "deployments": {
+    "403bbd32f52c70d0": {
+      "url": "https://www.wolframcloud.com/obj/gvarnavi/VisualGuideMaterialsScience/MySTSnippets/wolfram-403bbd32f52c70d0",
+      "cloudPath": "VisualGuideMaterialsScience/MySTSnippets/wolfram-403bbd32f52c70d0",
+      "deployed": "2026-07-08T16:09:18+00:00",
+      "code": "(*#|deploy*)\nisothermPlot =\n With[{curves =\n    Table[pNormalvdWEquationOfStateNormalized[vNormalized,\n      tNormalized], {tNormalized, 0.85, 1.1, 0.025}]},\n  Plot[curves, {vNormalized, 0.5, 4}, PlotRange -> {{0, 4}, {0, 2}},\n   Frame -> True, PlotStyle -> \"ThermometerColors\",\n   FrameLabel -> {\"normalized volume\", \"normalized pressure\"},\n   BaseStyle -> 24, ImageSize -> 750,\n   PlotLegends ->\n    Placed[BarLegend[{\"ThermometerColors\", {.85, 1.1}},\n      LegendLayout -> \"Row\", LegendLabel -> \"normalized temperature\",\n      LegendFunction -> \"Frame\", LabelStyle -> 18,\n      LegendMarkerSize -> 350], {0.7, 0.85}]]]"
+    },
+    "5811ab098bfc9b10": {
+      "url": "https://www.wolframcloud.com/obj/gvarnavi/VisualGuideMaterialsScience/MySTSnippets/wolfram-5811ab098bfc9b10",
+      "cloudPath": "VisualGuideMaterialsScience/MySTSnippets/wolfram-5811ab098bfc9b10",
+      "deployed": "2026-07-08T16:09:18+00:00",
+      "code": "(*#|deploy*)\nShow[\n isothermPlot,\n Plot[{pNormalvdWEquationOfStateNormalized[vNormalized, 1],\n   spinode[vNormalized]}, {vNormalized, 0.5, 4},\n  PlotStyle -> \"MintColors\", Filling -> {2 -> Bottom},\n  FillingStyle -> Append[ColorData[\"MintColors\"][1], 0.25],\n  PlotLegends ->\n   Placed[LineLegend[\n     \"MintColors\", {\"Critical Isotherm, T=1\", \"Spinodal Region\"},\n     LabelStyle -> 18], {0.7, 0.65}]]]"
+    },
     "62b7ba41ff7279d4": {
       "url": "https://www.wolframcloud.com/obj/gvarnavi/VisualGuideMaterialsScience/MySTSnippets/wolfram-62b7ba41ff7279d4",
       "cloudPath": "VisualGuideMaterialsScience/MySTSnippets/wolfram-62b7ba41ff7279d4",

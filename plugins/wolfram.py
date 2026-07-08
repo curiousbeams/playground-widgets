@@ -26,6 +26,8 @@ wolframscript is on PATH; a cache miss otherwise renders a warning admonition
 instead of failing the build, so CI and co-authors need no Wolfram tooling.
 
 Authoring helpers (no MyST involved):
+    plugins/wolfram.py --scaffold nb.nb          extract a .nb into an editable
+                                                 MyST page (needs wolframscript)
     plugins/wolfram.py --hash < cell.wl          digest of a single/first cell
     plugins/wolfram.py --hash-chain < cells.wl   chained digests; separate
                                                  cells with a line of just %%
@@ -64,9 +66,49 @@ CLOUD_PATH_ENV = "JUPYTER_BOOK_WOLFRAM_CLOUD_PATH"
 CLOUD_BASE_ENV = "JUPYTER_BOOK_WOLFRAM_CLOUD_BASE"
 DEFAULT_CLOUD_PATH = "myst-widgets"
 DEPLOY_TIMEOUT_SECONDS = 600
+SCAFFOLD_TIMEOUT_SECONDS = 300
 URL_MARKER = "MYST_WOLFRAM_URL"
 ERROR_MARKER = "MYST_WOLFRAM_ERROR"
+CELLS_MARKER = "MYST_WOLFRAM_CELLS="
 CHAIN_SEPARATOR = "%%"
+
+# --scaffold: notebook cell style -> markdown mapping (the author contract).
+HEADING_DEPTH = {"Title": 1, "Chapter": 1, "Section": 2, "Subsection": 3, "Subsubsection": 4}
+LIST_MARKERS = {"Item": "- ", "ItemNumbered": "1. ", "Subitem": "  - ", "SubitemNumbered": "  1. "}
+CODE_STYLES = {"Input", "Code", "Program"}
+
+# Common WL named characters -> unicode, for prose cells (the front end leaves
+# \[Name] literals in exported text). Unknown names are left as-is for review.
+WL_NAMED_CHARS = {
+    "LongDash": "—", "Dash": "–", "Times": "×", "Divide": "÷", "PlusMinus": "±",
+    "Degree": "°", "Rule": "→", "RightArrow": "→", "LeftArrow": "←", "Element": "∈",
+    "Infinity": "∞", "PartialD": "∂", "Nabla": "∇", "Sum": "∑", "Product": "∏",
+    "Integral": "∫", "LessEqual": "≤", "GreaterEqual": "≥", "NotEqual": "≠",
+    "Proportional": "∝", "Angstrom": "Å", "Prime": "′", "VerticalSeparator": "|",
+    "Alpha": "α", "Beta": "β", "Gamma": "γ", "Delta": "δ", "Epsilon": "ε",
+    "Zeta": "ζ", "Eta": "η", "Theta": "θ", "Kappa": "κ", "Lambda": "λ", "Mu": "μ",
+    "Nu": "ν", "Xi": "ξ", "Pi": "π", "Rho": "ρ", "Sigma": "σ", "Tau": "τ",
+    "Phi": "φ", "Chi": "χ", "Psi": "ψ", "Omega": "ω",
+    "CapitalGamma": "Γ", "CapitalDelta": "Δ", "CapitalTheta": "Θ",
+    "CapitalLambda": "Λ", "CapitalPi": "Π", "CapitalSigma": "Σ",
+    "CapitalPhi": "Φ", "CapitalPsi": "Ψ", "CapitalOmega": "Ω",
+}
+
+# wolframscript driver: read a .nb, emit ordered {style, text} cells as JSON.
+# Uses the front end (UsingFrontEnd) to export each cell's exact source text;
+# Output cells are dropped. __PATH__/__MARKER__ are substituted from Python.
+EXTRACT_DRIVER = r"""
+nb = Get[__PATH__];
+cells = Cases[nb, Cell[c_, s_String, ___] :> {s, Cell[c, s]}, Infinity];
+cells = Select[cells, #[[1]] =!= "Output" &];
+export[cell_] := Quiet@Check[First[MathLink`CallFrontEnd[
+  FrontEnd`ExportPacket[Append[cell, PageWidth -> Infinity], "InputText"]]], $Failed];
+data = UsingFrontEnd[
+  Table[With[{txt = export[cells[[i, 2]]]},
+    <|"style" -> cells[[i, 1]], "text" -> If[StringQ[txt], txt, ""]|>],
+    {i, Length[cells]}]];
+Print["__MARKER__" <> ExportString[data, "RawJSON", "Compact" -> True]];
+"""
 
 # In-code output tag, mirroring Jupyter/MyST cell magic: a full-line WL comment
 # `(* #| deploy *)` or `(* #| label: app:some-label *)`. Lines before the
@@ -718,6 +760,117 @@ def record_deployment(url: str, code: str | None, nb: str | None, digest: str | 
     print(digest)
 
 
+def extract_cells(nb_path: Path) -> list[dict[str, str]]:
+    """Extract ordered {style, text} cells from a .nb via wolframscript."""
+    if shutil.which("wolframscript") is None:
+        raise SystemExit(
+            "--scaffold needs wolframscript on PATH; run it on a licensed Wolfram machine."
+        )
+    if not nb_path.exists():
+        raise SystemExit(f"notebook file not found: {nb_path}")
+    driver_text = EXTRACT_DRIVER.replace(
+        "__PATH__", wl_string(str(nb_path.resolve()))
+    ).replace("__MARKER__", CELLS_MARKER)
+    with tempfile.TemporaryDirectory(prefix="myst-wolfram-") as tmp:
+        driver = Path(tmp) / "extract.wl"
+        driver.write_text(driver_text, encoding="utf-8")
+        try:
+            result = subprocess.run(
+                ["wolframscript", "-file", str(driver)],
+                capture_output=True,
+                text=True,
+                timeout=SCAFFOLD_TIMEOUT_SECONDS,
+            )
+        except (OSError, subprocess.TimeoutExpired) as error:
+            raise SystemExit(f"wolframscript extraction failed: {error}")
+    if result.returncode != 0:
+        raise SystemExit(f"wolframscript exited {result.returncode}: {result.stderr.strip()}")
+    for line in result.stdout.splitlines():
+        if line.startswith(CELLS_MARKER):
+            return json.loads(line[len(CELLS_MARKER):])
+    raise SystemExit("wolframscript produced no cell data (no MYST_WOLFRAM_CELLS line)")
+
+
+def is_typeset(text: str) -> bool:
+    r"""Typeset display cells (\!\(TraditionalForm...\)) are not runnable code."""
+    return text.lstrip().startswith("\\!\\(")
+
+
+def clean_prose(text: str) -> str:
+    r"""Replace common \[Name] literals with unicode in prose cells."""
+    return re.sub(
+        r"\\\[([A-Za-z]+)\]",
+        lambda m: WL_NAMED_CHARS.get(m.group(1), m.group(0)),
+        text,
+    )
+
+
+def wolfram_directive(code: str) -> str:
+    # Blank line after the options terminates directive-option parsing, so the
+    # WL body is taken verbatim (any (* #| ... *) marker in it is preserved).
+    return ":::{wolfram}\n:echo: true\n\n" + code.strip() + "\n:::"
+
+
+def cells_to_markdown(cells: list[dict[str, str]], title: str | None) -> str:
+    """Render extracted notebook cells as an editable MyST page (best-effort).
+
+    Headings, prose (Text), and lists (Item) convert directly; code cells
+    become {wolfram} directives (add a (* #| deploy/label *) marker to the ones
+    you want deployed); typeset equations and unknown styles are emitted with a
+    TODO comment for hand review, never silently dropped.
+    """
+    blocks: list[str] = []
+    title_consumed = title is not None
+
+    for cell in cells:
+        style = cell.get("style", "")
+        text = (cell.get("text") or "").strip()
+        if not text:
+            continue
+
+        if style in HEADING_DEPTH:
+            if not title_consumed and HEADING_DEPTH[style] == 1:
+                title = text
+                title_consumed = True
+                continue
+            blocks.append("#" * HEADING_DEPTH[style] + " " + text)
+        elif style in LIST_MARKERS:
+            item = LIST_MARKERS[style] + clean_prose(text).replace("\n", " ")
+            # Keep a run of list items in one block so MyST renders one list.
+            if blocks and blocks[-1].startswith(tuple(LIST_MARKERS.values())):
+                blocks[-1] += "\n" + item
+            else:
+                blocks.append(item)
+        elif style == "Text":
+            blocks.append(clean_prose(text))
+        elif style in CODE_STYLES:
+            if is_typeset(text):
+                blocks.append(
+                    "<!-- TODO: typeset equation from the notebook — convert to LaTeX -->\n"
+                    "```wl\n" + text + "\n```"
+                )
+            else:
+                blocks.append(wolfram_directive(text))
+        else:
+            blocks.append(f"<!-- TODO: unsupported cell style '{style}' -->\n" + text)
+
+    frontmatter = f"---\ntitle: {title or 'Untitled'}\n---"
+    return frontmatter + "\n\n" + "\n\n".join(blocks) + "\n"
+
+
+def scaffold(nb: str, title: str | None, out: str | None, force: bool) -> None:
+    cells = extract_cells(Path(nb))
+    markdown = cells_to_markdown(cells, title)
+    if out is None:
+        sys.stdout.write(markdown)
+        return
+    target = Path(out)
+    if target.exists() and not force:
+        raise SystemExit(f"{out} already exists (use --force to overwrite)")
+    target.write_text(markdown, encoding="utf-8")
+    log(f"wrote {out} ({len(cells)} cells)")
+
+
 def split_chain_input(raw: str) -> list[str]:
     cells: list[list[str]] = [[]]
     for line in raw.splitlines():
@@ -732,15 +885,22 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--nb", help="Local .nb path for --hash/--record")
     parser.add_argument("--digest", help="Record under an explicit digest (see placeholder box)")
+    parser.add_argument("-o", "--out", help="Write --scaffold output to a file instead of stdout")
+    parser.add_argument("--title", help="Page title for --scaffold (default: notebook's first heading)")
+    parser.add_argument("--force", action="store_true", help="Overwrite an existing --scaffold output file")
     group = parser.add_mutually_exclusive_group()
     group.add_argument("--role")
     group.add_argument("--directive")
     group.add_argument("--transform")
+    group.add_argument("--scaffold", metavar="NB", help="Extract a .nb into an editable MyST page")
     group.add_argument("--hash", action="store_true", help="Print digest of stdin code (or --nb file)")
     group.add_argument("--hash-chain", action="store_true", help="Chained digests; cells separated by a %% line")
     group.add_argument("--record", metavar="URL", help="Record a deployment (stdin code, --nb, or --digest)")
     args = parser.parse_args()
 
+    if args.scaffold:
+        scaffold(args.scaffold, args.title, args.out, args.force)
+        return
     if args.hash:
         print(file_hash(Path(args.nb)) if args.nb else content_hash(sys.stdin.read()))
         return
