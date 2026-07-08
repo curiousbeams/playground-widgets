@@ -1,0 +1,23 @@
+{
+  "version": 1,
+  "deployments": {
+    "466b102b4a11fb0b": {
+      "url": "https://www.wolframcloud.com/obj/gvarnavi/VisualGuideMaterialsScience/MySTSnippets/wolfram-466b102b4a11fb0b",
+      "cloudPath": "VisualGuideMaterialsScience/MySTSnippets/wolfram-466b102b4a11fb0b",
+      "deployed": "2026-07-04T16:43:06+00:00",
+      "code": "Manipulate[Plot[Sin[a x / pi], {x, 0, 2 Pi}], {a, 1, 3}]"
+    },
+    "e94696e32d47f41a": {
+      "url": "https://www.wolframcloud.com/obj/gvarnavi/VisualGuideMaterialsScience/MySTSnippets/wolfram-e94696e32d47f41a",
+      "cloudPath": "VisualGuideMaterialsScience/MySTSnippets/wolfram-e94696e32d47f41a",
+      "deployed": "2026-07-04T16:43:06+00:00",
+      "code": "pi = 2 Pi;\nManipulate[Plot[Sin[a x pi], {x, 0, 2 Pi}], {a, 1, 3}]"
+    },
+    "fb4fbf0cd0c27328": {
+      "url": "https://www.wolframcloud.com/obj/gvarnavi/VisualGuideMaterialsScience/MySTSnippets/wolfram-fb4fbf0cd0c27328",
+      "cloudPath": "VisualGuideMaterialsScience/MySTSnippets/wolfram-fb4fbf0cd0c27328",
+      "deployed": "2026-07-04T16:43:06+00:00",
+      "code": "Manipulate[Plot[Sin[a x], {x, 0, 2 Pi}], {a, 1, 3}]"
+    }
+  }
+}

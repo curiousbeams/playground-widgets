@@ -31,5 +31,7 @@ project:
   plugins:
     - type: executable
       path: .venv/bin/jupyter-book-marimo
+    - type: executable
+      path: plugins/wolfram.py
 site:
   template: book-theme
